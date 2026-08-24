@@ -7,10 +7,3 @@ services:
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: DATABASE_URL
-        sync: false
-      - key: DB_PATH
-        value: /data/mops.db.json
