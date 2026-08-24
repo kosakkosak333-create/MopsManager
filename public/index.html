@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MopsManager 🐶</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Экран входа -->
+  <div id="auth" class="auth">
+    <div class="auth-box">
+      <h1>🐶 MopsManager</h1>
+      <p class="sub">Мессенджер для мопсов</p>
+      <div class="tabs">
+        <button id="tabLogin" class="tab active">Вход</button>
+        <button id="tabReg" class="tab">Регистрация</button>
+      </div>
+      <input id="authUser" type="text" placeholder="Юзернейм" autocomplete="username" />
+      <input id="authPass" type="password" placeholder="Пароль" autocomplete="current-password" />
+      <button id="authBtn" class="auth-btn">Войти</button>
+      <p id="authError" class="auth-error"></p>
+    </div>
+  </div>
+
+  <!-- Основной интерфейс -->
+  <div id="app" class="app hidden">
+    <div class="guilds">
+      <div class="guild active" title="Mops">🐶</div>
+    </div>
+
+    <aside class="channels">
+      <div class="channels-head">
+        <span>Mops Server</span>
+      </div>
+      <div class="channels-list" id="channelList"></div>
+      <div class="me">
+        <span class="me-avatar">🐶</span>
+        <span id="meName" class="me-name"></span>
+        <button id="logoutBtn" title="Выйти">⎋</button>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-head">
+        <span id="chatTitle" class="chat-title"># general</span>
+        <button id="callBtn" class="call-btn" title="Позвонить">📞 Позвонить</button>
+      </header>
+
+      <div id="messages" class="messages"></div>
+
+      <form id="msgForm" class="msg-form" autocomplete="off">
+        <input id="msgInput" type="text" placeholder="Сообщение в #general" />
+        <button type="submit">➤</button>
+      </form>
+    </main>
+
+    <!-- Окно звонка -->
+    <div id="callWindow" class="call-window hidden">
+      <div class="call-window-head">
+        <span>📞 Звонок в <span id="callChan"></span></span>
+        <button id="hangupBtn" class="hangup">Завершить</button>
+      </div>
+      <div id="videoGrid" class="video-grid"></div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

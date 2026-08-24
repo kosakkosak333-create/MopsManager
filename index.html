@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MopsManager — мессенджер для мопсов 🐶</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <header class="sidebar-head">
+        <h1>🐶 MopsManager</h1>
+        <button id="addContactBtn" title="Добавить контакт">+ Контакт</button>
+      </header>
+      <ul id="contactList" class="contact-list"></ul>
+    </aside>
+
+    <main class="chat">
+      <header id="chatHead" class="chat-head">
+        <span class="chat-title">Выберите контакт</span>
+      </header>
+
+      <div id="messages" class="messages"></div>
+
+      <form id="msgForm" class="msg-form" autocomplete="off">
+        <input id="msgInput" type="text" placeholder="Напишите мопсу..." disabled />
+        <button type="submit" id="sendBtn" disabled>Отправить</button>
+      </form>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-body">
+      <h2>Новый контакт</h2>
+      <input id="contactName" type="text" placeholder="Имя мопса" />
+      <div class="modal-actions">
+        <button id="modalCancel">Отмена</button>
+        <button id="modalSave">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

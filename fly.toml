@@ -1,0 +1,24 @@
+app = "mopsmanager"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+  [[http_service.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+  [[http_service.ports]]
+    port = 80
+    handlers = ["http"]
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
