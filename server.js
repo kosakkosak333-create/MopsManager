@@ -19,8 +19,8 @@ const CHANNELS = [
   { id: "zvonki", name: "📞 звонки" },
 ];
 
-const sessions = {}; // token -> username
-const online = new Map(); // username -> Set(socketId)
+const sessions = {};
+const online = new Map();
 
 function dmId(a, b) { return "dm:" + [a, b].sort().join("__"); }
 
@@ -30,60 +30,60 @@ function emitToUser(name, event, data) {
   ids.forEach(id => io.to(id).emit(event, data));
 }
 
-app.post("/api/register", (req, res) => {
+app.post("/api/register", async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: "Нужны юзернейм и пароль" });
-  if (db.getUser(username)) return res.status(409).json({ error: "Такой юзернейм уже занят" });
-  db.createUser(username, password);
+  if (await db.getUser(username)) return res.status(409).json({ error: "Такой юзернейм уже занят" });
+  await db.createUser(username, password);
   res.json({ ok: true });
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body || {};
-  if (!db.getUser(username) || !db.authUser(username, password))
+  if (!await db.authUser(username, password))
     return res.status(401).json({ error: "Неверный юзернейм или пароль" });
   const token = crypto.randomBytes(24).toString("hex");
   sessions[token] = username;
   res.json({ token, username });
 });
 
-app.post("/api/friends/add", (req, res) => {
+app.post("/api/friends/add", async (req, res) => {
   const { token, target } = req.body || {};
   const me = sessions[token];
   if (!me) return res.status(401).json({ error: "Не авторизован" });
-  if (!target || !db.getUser(target)) return res.status(404).json({ error: "Пользователь не найден" });
+  if (!target || !await db.getUser(target)) return res.status(404).json({ error: "Пользователь не найден" });
   if (target === me) return res.status(400).json({ error: "Нельзя добавить себя" });
-  const my = db.getFriends(me), tgt = db.getFriends(target);
+  const my = await db.getFriends(me), tgt = await db.getFriends(target);
   if (my.friends.includes(target)) return res.status(400).json({ error: "Уже в друзьях" });
   if (my.outgoing.includes(target)) return res.status(400).json({ error: "Заявка уже отправлена" });
   my.outgoing.push(target);
   if (!tgt.incoming.includes(me)) tgt.incoming.push(me);
-  db.setFriends(me, my); db.setFriends(target, tgt);
-  emitToUser(target, "friends-updated", db.getFriends(target));
+  await db.setFriends(me, my); await db.setFriends(target, tgt);
+  emitToUser(target, "friends-updated", await db.getFriends(target));
   res.json({ ok: true });
 });
 
-app.post("/api/friends/accept", (req, res) => {
+app.post("/api/friends/accept", async (req, res) => {
   const { token, target } = req.body || {};
   const me = sessions[token];
   if (!me) return res.status(401).json({ error: "Не авторизован" });
-  const my = db.getFriends(me), tgt = db.getFriends(target);
+  const my = await db.getFriends(me), tgt = await db.getFriends(target);
   if (!my.incoming.includes(target)) return res.status(400).json({ error: "Нет входящей заявки" });
   my.incoming = my.incoming.filter(x => x !== target);
   tgt.outgoing = tgt.outgoing.filter(x => x !== me);
   if (!my.friends.includes(target)) my.friends.push(target);
   if (!tgt.friends.includes(me)) tgt.friends.push(me);
-  db.setFriends(me, my); db.setFriends(target, tgt);
-  emitToUser(target, "friends-updated", db.getFriends(target));
+  await db.setFriends(me, my); await db.setFriends(target, tgt);
+  emitToUser(target, "friends-updated", await db.getFriends(target));
   res.json({ ok: true });
 });
 
-app.post("/api/friends/remove", (req, res) => {
+app.post("/api/friends/remove", async (req, res) => {
   const { token, target } = req.body || {};
   const me = sessions[token];
   if (!me) return res.status(401).json({ error: "Не авторизован" });
-  const my = db.getFriends(me);
-  const tgt = db.getUser(target) ? db.getFriends(target) : null;
+  const my = await db.getFriends(me);
+  const tgt = (await db.getUser(target)) ? await db.getFriends(target) : null;
   my.friends = my.friends.filter(x => x !== target);
   my.incoming = my.incoming.filter(x => x !== target);
   my.outgoing = my.outgoing.filter(x => x !== target);
@@ -91,17 +91,17 @@ app.post("/api/friends/remove", (req, res) => {
     tgt.friends = tgt.friends.filter(x => x !== me);
     tgt.incoming = tgt.incoming.filter(x => x !== me);
     tgt.outgoing = tgt.outgoing.filter(x => x !== me);
-    db.setFriends(target, tgt);
+    await db.setFriends(target, tgt);
   }
-  db.setFriends(me, my);
-  emitToUser(target, "friends-updated", tgt ? db.getFriends(target) : null);
+  await db.setFriends(me, my);
+  emitToUser(target, "friends-updated", tgt ? await db.getFriends(target) : null);
   res.json({ ok: true });
 });
 
-app.get("/api/friends", (req, res) => {
+app.get("/api/friends", async (req, res) => {
   const me = sessions[req.query.token];
   if (!me) return res.status(401).json({ error: "Не авторизован" });
-  res.json(db.getFriends(me));
+  res.json(await db.getFriends(me));
 });
 
 io.on("connection", socket => {
@@ -116,19 +116,16 @@ io.on("connection", socket => {
 
   socket.emit("init", { channels: CHANNELS, username, friends: db.getFriends(username) });
 
-  socket.on("data", () => {});
-  socket.emit("friends-updated", db.getFriends(username));
-
-  socket.on("join-channel", channelId => {
+  socket.on("join-channel", async channelId => {
     socket.rooms.forEach(r => { if (r !== socket.id) socket.leave(r); });
     socket.join(channelId);
-    socket.emit("channel-history", { channelId, messages: db.getMessages(channelId) });
+    socket.emit("channel-history", { channelId, messages: await db.getMessages(channelId) });
   });
 
-  socket.on("chat-message", ({ channelId, text }) => {
+  socket.on("chat-message", async ({ channelId, text }) => {
     if (!channelId || !text) return;
     const msg = { user: username, text, time: Date.now(), channelId };
-    db.addMessage(channelId, msg);
+    await db.addMessage(channelId, msg);
     io.to(channelId).emit("chat-message", msg);
   });
 
@@ -173,4 +170,4 @@ io.on("connection", socket => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => console.log(`MopsManager запущен на http://localhost:${PORT}`));
+server.listen(PORT, "0.0.0.0", () => console.log("MopsManager on :" + PORT));
