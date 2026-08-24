@@ -26,7 +26,6 @@ function loadUsers() {
     return {};
   }
 }
-
 function saveUsers(users) {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
@@ -41,18 +40,28 @@ function hashPassword(password, salt) {
   const hash = crypto.scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${hash}`;
 }
-
 function verifyPassword(password, stored) {
   const [salt] = stored.split(":");
   const check = hashPassword(password, salt);
   return crypto.timingSafeEqual(Buffer.from(stored), Buffer.from(check));
+}
+function getFriends(u) {
+  if (!users[u]) return { friends: [], incoming: [], outgoing: [] };
+  if (!users[u].friends) users[u].friends = { friends: [], incoming: [], outgoing: [] };
+  return users[u].friends;
+}
+function dmId(a, b) {
+  return "dm:" + [a, b].sort().join("__");
 }
 
 app.post("/api/register", (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: "Нужны юзернейм и пароль" });
   if (users[username]) return res.status(409).json({ error: "Такой юзернейм уже занят" });
-  users[username] = { password: hashPassword(password) };
+  users[username] = {
+    password: hashPassword(password),
+    friends: { friends: [], incoming: [], outgoing: [] },
+  };
   saveUsers(users);
   res.json({ ok: true });
 });
@@ -67,6 +76,61 @@ app.post("/api/login", (req, res) => {
   res.json({ token, username });
 });
 
+// ---------- Друзья ----------
+app.post("/api/friends/add", (req, res) => {
+  const { token, target } = req.body || {};
+  const me = sessions[token];
+  if (!me) return res.status(401).json({ error: "Не авторизован" });
+  if (!target || !users[target]) return res.status(404).json({ error: "Пользователь не найден" });
+  if (target === me) return res.status(400).json({ error: "Нельзя добавить себя" });
+  const my = getFriends(me), tgt = getFriends(target);
+  if (my.friends.includes(target)) return res.status(400).json({ error: "Уже в друзьях" });
+  if (my.outgoing.includes(target)) return res.status(400).json({ error: "Заявка уже отправлена" });
+  my.outgoing.push(target);
+  if (!tgt.incoming.includes(me)) tgt.incoming.push(me);
+  saveUsers(users);
+  res.json({ ok: true });
+});
+
+app.post("/api/friends/accept", (req, res) => {
+  const { token, target } = req.body || {};
+  const me = sessions[token];
+  if (!me) return res.status(401).json({ error: "Не авторизован" });
+  const my = getFriends(me), tgt = getFriends(target);
+  if (!my.incoming.includes(target)) return res.status(400).json({ error: "Нет входящей заявки" });
+  my.incoming = my.incoming.filter(x => x !== target);
+  tgt.outgoing = tgt.outgoing.filter(x => x !== me);
+  if (!my.friends.includes(target)) my.friends.push(target);
+  if (!tgt.friends.includes(me)) tgt.friends.push(me);
+  saveUsers(users);
+  res.json({ ok: true });
+});
+
+app.post("/api/friends/remove", (req, res) => {
+  const { token, target } = req.body || {};
+  const me = sessions[token];
+  if (!me) return res.status(401).json({ error: "Не авторизован" });
+  const my = getFriends(me);
+  const tgt = users[target] ? getFriends(target) : null;
+  my.friends = my.friends.filter(x => x !== target);
+  my.incoming = my.incoming.filter(x => x !== target);
+  my.outgoing = my.outgoing.filter(x => x !== target);
+  if (tgt) {
+    tgt.friends = tgt.friends.filter(x => x !== me);
+    tgt.incoming = tgt.incoming.filter(x => x !== me);
+    tgt.outgoing = tgt.outgoing.filter(x => x !== me);
+  }
+  saveUsers(users);
+  res.json({ ok: true });
+});
+
+app.get("/api/friends", (req, res) => {
+  const token = req.query.token;
+  const me = sessions[token];
+  if (!me) return res.status(401).json({ error: "Не авторизован" });
+  res.json(getFriends(me));
+});
+
 io.on("connection", socket => {
   const token = socket.handshake.auth.token;
   const username = sessions[token];
@@ -77,13 +141,19 @@ io.on("connection", socket => {
   socket.username = username;
   socket.join("lobby");
 
-  socket.emit("init", { channels: CHANNELS, username, messages });
+  socket.emit("init", {
+    channels: CHANNELS,
+    username,
+    messages,
+    friends: getFriends(username),
+  });
 
   socket.on("join-channel", channelId => {
     socket.rooms.forEach(r => {
       if (r !== socket.id) socket.leave(r);
     });
-    if (messages[channelId]) socket.join(channelId);
+    if (!messages[channelId]) messages[channelId] = [];
+    socket.join(channelId);
   });
 
   socket.on("chat-message", ({ channelId, text }) => {
@@ -94,8 +164,8 @@ io.on("connection", socket => {
     io.to(channelId).emit("chat-message", msg);
   });
 
-  // WebRTC signaling для групповых звонков (mesh)
-  const callRooms = {}; // channelId -> Set(username)
+  // ---------- WebRTC звонки (mesh) ----------
+  const callRooms = {};
 
   socket.on("call-join", ({ channelId }) => {
     if (!messages[channelId]) return;

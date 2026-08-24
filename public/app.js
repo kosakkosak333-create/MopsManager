@@ -13,6 +13,7 @@ let username = localStorage.getItem("mops_user");
 let socket = null;
 let channels = [];
 let currentChannel = null;
+let currentTitle = null;
 
 let localStream = null;
 let peerConnections = new Map();
@@ -59,12 +60,17 @@ function connect() {
   socket.on("init", data => {
     channels = data.channels;
     username = data.username;
-    allMessages = data.messages;
+    allMessages = data.messages || {};
     renderChannels();
-    if (!currentChannel) selectChannel("general");
+    renderFriends(data.friends || { friends: [], incoming: [], outgoing: [] });
+    if (!currentChannel) selectChannel("general", "# general");
   });
 
-  socket.on("chat-message", appendMessage);
+  socket.on("chat-message", m => {
+    if (!allMessages[m.channelId]) allMessages[m.channelId] = [];
+    allMessages[m.channelId].push(m);
+    appendMessage(m);
+  });
 
   socket.on("call-peers", ({ channelId, peers }) => {
     peers.forEach(peer => createOffer(peer, channelId));
@@ -102,17 +108,109 @@ function renderChannels() {
     const div = document.createElement("div");
     div.className = "channel" + (c.id === currentChannel ? " active" : "");
     div.textContent = c.name;
-    div.onclick = () => selectChannel(c.id);
+    div.onclick = () => selectChannel(c.id, c.name);
     list.appendChild(div);
   });
 }
 
-function selectChannel(id) {
+function dmId(a, b) { return "dm:" + [a, b].sort().join("__"); }
+
+function renderFriends(fr) {
+  const list = document.getElementById("friendList");
+  list.innerHTML = "";
+  (fr.friends || []).forEach(f => {
+    const row = document.createElement("div");
+    row.className = "friend";
+    row.innerHTML = `<span class="friend-name">🐶 ${escapeHtml(f)}</span>`;
+    const actions = document.createElement("span");
+    actions.className = "friend-actions";
+    const msg = document.createElement("button");
+    msg.textContent = "✉"; msg.title = "Написать";
+    msg.onclick = () => openDM(f);
+    const call = document.createElement("button");
+    call.textContent = "📞"; call.title = "Позвонить";
+    call.onclick = () => { openDM(f); setTimeout(startCall, 300); };
+    const rm = document.createElement("button");
+    rm.textContent = "✕"; rm.title = "Удалить";
+    rm.onclick = () => removeFriend(f);
+    actions.append(msg, call, rm);
+    row.append(actions);
+    list.appendChild(row);
+  });
+  (fr.incoming || []).forEach(f => {
+    const row = document.createElement("div");
+    row.className = "friend incoming";
+    row.innerHTML = `<span class="friend-name">⬇ ${escapeHtml(f)}</span>`;
+    const actions = document.createElement("span");
+    actions.className = "friend-actions";
+    const acc = document.createElement("button");
+    acc.textContent = "✔"; acc.title = "Принять";
+    acc.onclick = () => acceptFriend(f);
+    const dec = document.createElement("button");
+    dec.textContent = "✕"; dec.title = "Отклонить";
+    dec.onclick = () => removeFriend(f);
+    actions.append(acc, dec);
+    row.append(actions);
+    list.appendChild(row);
+  });
+  (fr.outgoing || []).forEach(f => {
+    const row = document.createElement("div");
+    row.className = "friend outgoing";
+    row.innerHTML = `<span class="friend-name">… ${escapeHtml(f)}</span>`;
+    list.appendChild(row);
+  });
+}
+
+async function refreshFriends() {
+  try {
+    const r = await fetch("/api/friends?token=" + encodeURIComponent(token));
+    if (r.ok) renderFriends(await r.json());
+  } catch {}
+}
+
+document.getElementById("addFriendBtn").onclick = async () => {
+  const input = document.getElementById("friendInput");
+  const target = input.value.trim();
+  if (!target) return;
+  const r = await fetch("/api/friends/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, target })
+  });
+  const d = await r.json();
+  if (!r.ok) { alert(d.error || "Ошибка"); return; }
+  input.value = "";
+  refreshFriends();
+};
+
+async function acceptFriend(f) {
+  await fetch("/api/friends/accept", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, target: f })
+  });
+  refreshFriends();
+}
+async function removeFriend(f) {
+  await fetch("/api/friends/remove", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, target: f })
+  });
+  refreshFriends();
+}
+
+function openDM(friend) {
+  const id = dmId(username, friend);
+  selectChannel(id, "💬 " + friend);
+}
+
+function selectChannel(id, title) {
   currentChannel = id;
+  currentTitle = title || ("# " + id);
   socket.emit("join-channel", id);
-  document.getElementById("chatTitle").textContent = "# " + id;
-  document.getElementById("msgInput").placeholder = "Сообщение в #" + id;
-  document.getElementById("messages").innerHTML = "";
+  document.getElementById("chatTitle").textContent = currentTitle;
+  document.getElementById("msgInput").placeholder = "Сообщение " + currentTitle;
+  const box = document.getElementById("messages");
+  box.innerHTML = "";
   (allMessages[id] || []).forEach(m => appendMessage({ ...m, channelId: id }));
   renderChannels();
 }
@@ -155,16 +253,18 @@ const videoGrid = document.getElementById("videoGrid");
 callBtn.onclick = () => { if (inCall) hangup(); else startCall(); };
 
 async function startCall() {
+  if (inCall) return;
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   } catch {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch { alert("Нет доступа к камере/микрофону"); return; }
   }
   inCall = true;
   callBtn.textContent = "📴 Завершить";
   callBtn.classList.add("in-call");
   callWindow.classList.remove("hidden");
-  document.getElementById("callChan").textContent = "#" + currentChannel;
+  document.getElementById("callChan").textContent = currentTitle || ("#" + currentChannel);
   addVideo("me", localStream, true);
   socket.emit("call-join", { channelId: currentChannel });
 }
@@ -172,7 +272,7 @@ async function startCall() {
 function createPeer(peer) {
   if (peerConnections.has(peer)) return peerConnections.get(peer);
   const pc = new RTCPeerConnection(ICE);
-  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
   pc.onicecandidate = e => {
     if (e.candidate) socket.emit("ice-candidate", { channelId: currentChannel, to: peer, candidate: e.candidate });
   };
