@@ -6,14 +6,21 @@ const authBtn = document.getElementById("authBtn");
 const authError = document.getElementById("authError");
 const tabLogin = document.getElementById("tabLogin");
 const tabReg = document.getElementById("tabReg");
+const statusDot = document.getElementById("statusDot");
+
+const CHANNELS = [
+  { id: "general", name: "📢 general" },
+  { id: "mopsi", name: "🐶 мопсы" },
+  { id: "zvonki", name: "📞 звонки" },
+];
 
 let mode = "login";
 let token = localStorage.getItem("mops_token");
 let username = localStorage.getItem("mops_user");
 let socket = null;
-let channels = [];
 let currentChannel = null;
 let currentTitle = null;
+let allMessages = {};
 
 let localStream = null;
 let peerConnections = new Map();
@@ -31,8 +38,7 @@ authBtn.onclick = async () => {
   if (!u || !p) { authError.textContent = "Заполните все поля"; return; }
   const endpoint = mode === "login" ? "/api/login" : "/api/register";
   const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: u, password: p })
   });
   const data = await res.json();
@@ -49,21 +55,36 @@ function enterApp() {
   authEl.classList.add("hidden");
   appEl.classList.remove("hidden");
   document.getElementById("meName").textContent = username;
+  renderChannels();
   connect();
 }
 
-let allMessages = {};
-
 function connect() {
-  socket = io({ auth: { token } });
+  socket = io({ auth: { token }, transports: ["websocket", "polling"] });
+
+  socket.on("connect", () => {
+    statusDot.className = "status-dot online";
+    if (currentChannel) {
+      socket.emit("join-channel", currentChannel);
+      refreshFriends();
+    }
+  });
+  socket.on("disconnect", () => { statusDot.className = "status-dot offline"; });
 
   socket.on("init", data => {
-    channels = data.channels;
     username = data.username;
-    allMessages = data.messages || {};
     renderChannels();
     renderFriends(data.friends || { friends: [], incoming: [], outgoing: [] });
     if (!currentChannel) selectChannel("general", "# general");
+  });
+
+  socket.on("channel-history", ({ channelId, messages }) => {
+    allMessages[channelId] = messages;
+    if (channelId === currentChannel) {
+      const box = document.getElementById("messages");
+      box.innerHTML = "";
+      messages.forEach(m => appendMessage({ ...m, channelId }));
+    }
   });
 
   socket.on("chat-message", m => {
@@ -72,10 +93,10 @@ function connect() {
     appendMessage(m);
   });
 
-  socket.on("call-peers", ({ channelId, peers }) => {
-    peers.forEach(peer => createOffer(peer, channelId));
-  });
-  socket.on("call-incoming", ({ from }) => { /* ждём offer */ });
+  socket.on("friends-updated", fr => { if (fr) renderFriends(fr); });
+
+  socket.on("call-peers", ({ channelId, peers }) => peers.forEach(peer => createOffer(peer, channelId)));
+  socket.on("call-incoming", () => {});
   socket.on("call-offer", async ({ from, to, offer, channelId }) => {
     if (to !== username) return;
     const pc = createPeer(from);
@@ -104,7 +125,7 @@ function connect() {
 function renderChannels() {
   const list = document.getElementById("channelList");
   list.innerHTML = "";
-  channels.forEach(c => {
+  CHANNELS.forEach(c => {
     const div = document.createElement("div");
     div.className = "channel" + (c.id === currentChannel ? " active" : "");
     div.textContent = c.name;
@@ -124,15 +145,9 @@ function renderFriends(fr) {
     row.innerHTML = `<span class="friend-name">🐶 ${escapeHtml(f)}</span>`;
     const actions = document.createElement("span");
     actions.className = "friend-actions";
-    const msg = document.createElement("button");
-    msg.textContent = "✉"; msg.title = "Написать";
-    msg.onclick = () => openDM(f);
-    const call = document.createElement("button");
-    call.textContent = "📞"; call.title = "Позвонить";
-    call.onclick = () => { openDM(f); setTimeout(startCall, 300); };
-    const rm = document.createElement("button");
-    rm.textContent = "✕"; rm.title = "Удалить";
-    rm.onclick = () => removeFriend(f);
+    const msg = document.createElement("button"); msg.textContent = "✉"; msg.title = "Написать"; msg.onclick = () => openDM(f);
+    const call = document.createElement("button"); call.textContent = "📞"; call.title = "Позвонить"; call.onclick = () => { openDM(f); setTimeout(startCall, 300); };
+    const rm = document.createElement("button"); rm.textContent = "✕"; rm.title = "Удалить"; rm.onclick = () => removeFriend(f);
     actions.append(msg, call, rm);
     row.append(actions);
     list.appendChild(row);
@@ -143,12 +158,8 @@ function renderFriends(fr) {
     row.innerHTML = `<span class="friend-name">⬇ ${escapeHtml(f)}</span>`;
     const actions = document.createElement("span");
     actions.className = "friend-actions";
-    const acc = document.createElement("button");
-    acc.textContent = "✔"; acc.title = "Принять";
-    acc.onclick = () => acceptFriend(f);
-    const dec = document.createElement("button");
-    dec.textContent = "✕"; dec.title = "Отклонить";
-    dec.onclick = () => removeFriend(f);
+    const acc = document.createElement("button"); acc.textContent = "✔"; acc.title = "Принять"; acc.onclick = () => acceptFriend(f);
+    const dec = document.createElement("button"); dec.textContent = "✕"; dec.title = "Отклонить"; dec.onclick = () => removeFriend(f);
     actions.append(acc, dec);
     row.append(actions);
     list.appendChild(row);
@@ -173,8 +184,7 @@ document.getElementById("addFriendBtn").onclick = async () => {
   const target = input.value.trim();
   if (!target) return;
   const r = await fetch("/api/friends/add", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token, target })
   });
   const d = await r.json();
@@ -184,35 +194,26 @@ document.getElementById("addFriendBtn").onclick = async () => {
 };
 
 async function acceptFriend(f) {
-  await fetch("/api/friends/accept", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, target: f })
-  });
+  await fetch("/api/friends/accept", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, target: f }) });
   refreshFriends();
 }
 async function removeFriend(f) {
-  await fetch("/api/friends/remove", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, target: f })
-  });
+  await fetch("/api/friends/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, target: f }) });
   refreshFriends();
 }
 
-function openDM(friend) {
-  const id = dmId(username, friend);
-  selectChannel(id, "💬 " + friend);
-}
+function openDM(friend) { selectChannel(dmId(username, friend), "💬 " + friend); }
 
 function selectChannel(id, title) {
   currentChannel = id;
   currentTitle = title || ("# " + id);
-  socket.emit("join-channel", id);
   document.getElementById("chatTitle").textContent = currentTitle;
   document.getElementById("msgInput").placeholder = "Сообщение " + currentTitle;
   const box = document.getElementById("messages");
   box.innerHTML = "";
   (allMessages[id] || []).forEach(m => appendMessage({ ...m, channelId: id }));
   renderChannels();
+  if (socket && socket.connected) socket.emit("join-channel", id);
 }
 
 document.getElementById("msgForm").addEventListener("submit", e => {
@@ -240,26 +241,19 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
-document.getElementById("logoutBtn").onclick = () => {
-  localStorage.clear();
-  location.reload();
-};
+document.getElementById("logoutBtn").onclick = () => { localStorage.clear(); location.reload(); };
 
 /* ---------- Звонки ---------- */
 const callBtn = document.getElementById("callBtn");
 const callWindow = document.getElementById("callWindow");
 const videoGrid = document.getElementById("videoGrid");
-
 callBtn.onclick = () => { if (inCall) hangup(); else startCall(); };
 
 async function startCall() {
   if (inCall) return;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  } catch {
-    try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch { alert("Нет доступа к камере/микрофону"); return; }
-  }
+  try { localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true }); }
+  catch { try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { alert("Нет доступа к камере/микрофону"); return; } }
+  if (!socket || !socket.connected) { alert("Нет соединения с сервером"); if (localStream) localStream.getTracks().forEach(t => t.stop()); localStream = null; return; }
   inCall = true;
   callBtn.textContent = "📴 Завершить";
   callBtn.classList.add("in-call");
@@ -273,9 +267,7 @@ function createPeer(peer) {
   if (peerConnections.has(peer)) return peerConnections.get(peer);
   const pc = new RTCPeerConnection(ICE);
   if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-  pc.onicecandidate = e => {
-    if (e.candidate) socket.emit("ice-candidate", { channelId: currentChannel, to: peer, candidate: e.candidate });
-  };
+  pc.onicecandidate = e => { if (e.candidate) socket.emit("ice-candidate", { channelId: currentChannel, to: peer, candidate: e.candidate }); };
   pc.ontrack = e => addVideo(peer, e.streams[0], false);
   peerConnections.set(peer, pc);
   return pc;
@@ -291,18 +283,12 @@ async function createOffer(peer, channelId) {
 function addVideo(id, stream, isLocal) {
   removeVideo(id);
   const v = document.createElement("video");
-  v.id = "vid-" + id;
-  v.autoplay = true;
-  v.playsInline = true;
+  v.id = "vid-" + id; v.autoplay = true; v.playsInline = true;
   if (isLocal) v.muted = true;
   v.srcObject = stream;
   videoGrid.appendChild(v);
 }
-
-function removeVideo(id) {
-  const v = document.getElementById("vid-" + id);
-  if (v) v.remove();
-}
+function removeVideo(id) { const v = document.getElementById("vid-" + id); if (v) v.remove(); }
 
 function hangup() {
   peerConnections.forEach(pc => pc.close());
@@ -314,7 +300,7 @@ function hangup() {
   inCall = false;
   callBtn.textContent = "📞 Позвонить";
   callBtn.classList.remove("in-call");
-  socket.emit("call-leave", { channelId: currentChannel });
+  if (socket && socket.connected) socket.emit("call-leave", { channelId: currentChannel });
 }
 
 document.getElementById("hangupBtn").onclick = hangup;
